@@ -1,0 +1,943 @@
+---
+title: "template report"
+date: "Report created: `r Sys.Date()`" #data wytworzenia dokumentu Knit
+output: 
+  html_document:
+    toc: true #Table od content -> spis treści=-=-=-=-=-=-
+    toc_depth: 2 #jak głęboko -> do dwóch poziomów
+    toc_float:
+      collapsed: false #jak będzie się chował
+      smooth_scroll: true
+    number_sections: true
+    code_folding: hide
+    theme: spacelab #wygląd
+    self_contained: false
+    lib_dir: libs
+    highlight: null
+---
+
+```{css organizacyjnie, echo = FALSE}
+li {
+  line-height: 3; #jak dokument będzie się zachowywał podczas edycji
+  # te takie ptaszki ' to "chunki", mogące działać samodzielnie
+}
+```
+
+```{css organizacyjnie_zoom-lib-src, echo = FALSE}
+script src = "https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js" #pobieramy skrypt od drugiej osoby -> pozwalające na zoomowanie obrazków
+```
+
+```{js do_ _powiększania_zdjęć zoom-jquery, echo = FALSE}
+$(document).ready(function() {
+    $('body').prepend('<div class=\"zoomDiv\"><img src=\"\" class=\"zoomImg\"></div>');
+    // onClick function for all plots (img's)
+    $('img:not(.zoomImg)').click(function() {
+      $('.zoomImg').attr('src', $(this).attr('src')).css({width: '100%'});
+      $('.zoomDiv').css({opacity: '1', width: 'auto', border: '1px solid white', borderRadius: '5px', position: 'fixed', top: '50%', left: '50%', marginRight: '-50%', transform: 'translate(-50%, -50%)', boxShadow: '0px 0px 50px #888888', zIndex: '50', overflow: 'auto', maxHeight: '100%'});
+    });
+    // onClick function for zoomImg
+    $('img.zoomImg').click(function() {
+      $('.zoomDiv').css({opacity: '0', width: '0%'}); 
+    });
+  });
+```
+
+```{r pierwszy_chunk_globalny - wpływa na cały dokument, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE, #do wyświetlania danych 
+	message = FALSE, #w sumie to też
+	warning = FALSE, #blokuje wyświetlanie errorów w raporcie
+	autodep = TRUE, #automatycznie ogarnia pakiety żeby każdy chunk działał jak należy -> ładuje automatycznie potrzebne pakiety do innych chunków. Chunk 14 bierze informacje wspomniane w chunku 7
+	cache = TRUE, #robi zapis tego co zachowane
+	cache.lazy = FALSE #Zapobiega na korzystaniu ze starych wygenerowanych obrazów
+)
+```
+
+```{r setup_libraries, include=FALSE,echo=FALSE,message=FALSE,warning=FALSE,cache=FALSE}
+# load libraries
+#ładujemy pakiety, które będą rzutowały na następne chunki
+library(nanotail) #Pakiet od Pawła, do korzystania z danych nanoporowych https://github.com/smaegol/nanotail
+library(ggplot2) #korzysta z niego my oraz nanotail -> robi wykresy
+library(tidyverse) #dziwne i fajne pakiety do analizy i wizualizacji danych
+library(tibble) #forma ramki danych o większych możliwościach wobec zwyklych tabelek
+library(magrittr) #przyzwyczajenie ale też robimy pipe |> albo %>%. Lepszy %>%
+library(dplyr) #do sortowania -> daje dodatkowe możliwości
+library(gplots) # I prefer correlation plots from this package
+library(biomaRt) # for annotation automaticly
+library(kableExtra) # for tables ,do outputu ładnie tabelarycznego
+```
+
+```{r load_data}
+#możemy ładować dane pisząc tak o albo z pakietu vroom https://www.tidyverse.org/blog/2019/05/vroom-1-0-0/
+#vroom optymalizuje zużycie pamięci -> R korzysta z RAMu
+#df <- vroom::vroom("/home/nagumi/ANALYSES/Ninetails_various_organisms/T.brucei/BSF1/2023-02-08_12-48-39_read_classes.tsv", show_col_types = FALSE); df #wywołujemy funkcję z pakietu vroom żeby wiedzieć skąd braliśmy tą funkcję
+
+```
+
+```{r read_yaml-config}
+#czyli dajemy pełne ścieżki oraz wszelkie informacje dla R -> no niestety musimy ręcznie :(
+#to co w tym pliku zostanie wybrane przez markdown co umożliwia automatyzacje na dalszych etapów
+#plik bez struktury ściśle określonej. Wrzucamy tylko dane które sami bedziemy używać
+#na tego podstawie zrobimy tabelę próbek
+# to co musi być to:
+  #sample_name
+  #group
+  #polya_path
+
+#config musi się znajdować w tym samym folderze co markdown.rmd
+#batch effect to efekt wyjaśniający większe podobieństwa osobników z jednego miotu wobec dwóch różnych okazów dzikich
+
+################################################################################
+# READ YAML
+################################################################################
+# I have a bit different approach to global option definition than PK. 
+# I prefer to define them within the report than in yaml
+# as sometimes they do not work (and one has to reload config if some changes 
+# are introduced "on the fly")
+
+
+config<-yaml::yaml.load_file("config_trypanosoma.yml")
+# read samples information
+samples_names <- names(config$samples)
+groups <- levels(factor(sapply(config$samples,function(x) {x$group})))
+input_samples_table<-data.frame(t(sapply(config$samples,unlist)))
+if (!"sample_name" %in% colnames(input_samples_table)) {
+  input_samples_table$sample_name <- samples_names  
+}
+rownames(input_samples_table) <- NULL
+input_samples_table <- input_samples_table %>% dplyr::select(sample_name,dplyr::everything()) # move sample name to the beginning of table
+
+ 
+
+#reorder alphabetically (by unique label - decide whether you use sample_name or group variable
+# hint: if each sample was sequenced once, most probably using sample_name would be ok
+# if one sample was sequenced more than once - then use group instead to avoid error thrown
+# later by rep() function; sample_name version is commented out by default)
+input_samples_table <- with(input_samples_table,  input_samples_table[order(group) , ]) 
+#input_samples_table <- with(input_samples_table,  input_samples_table[order(sample_name) , ]) 
+```
+
+```{r produkcja_tabeli}
+# input_samples_table #podgląd tabeli
+input_samples_table
+```
+
+```{r wczytanie_wielu_danych_i_filtrowanie_ich}
+################################################################################
+# LOADING $ FILTERING POLYA DATA
+################################################################################
+
+
+polya_data <- nanotail::read_polya_multiple(input_samples_table) #wczytywanie danych funkcją read_polya_multiple ze zbioru input_samples_table. Paweł stworzył taką funkcję umożliwiająca wczytanie zestawu danych, lecz trzeba mu wcześniej podać te ścieżki
+polya_data_filtered <- nanotail::remove_failed_reads(polya_data) #a ta funkcja usuwa złe odczyty i tworzy nową data frame na przefiltrowane
+
+
+```
+
+In the current analysis **`r length(samples_names)` samples** were examined, arranged in **`r length(groups)` groups**. The table with metadata for each sample is shown below.
+
+```{r}
+# tekst powyżej się wyświetli
+```
+
+```{r tabela na podsumowanie}
+################################################################################
+# TABLE METADATA - COLOURED
+################################################################################
+
+#drop unnecessary cols
+input_samples_table <- input_samples_table %>% dplyr::select( -polya_path) #Powstanie tabelka ze wszystkimi kolumnami poza poly_path
+
+#color groups so the table is more visually attractive
+input_samples_table %>% knitr::kable("html", escape = F, align = "c") %>% kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),fixed_thead = T) #uatrakcyjnia nam odbiór tabeli
+```
+
+## Nanopolish QC
+
+The total of **`r formatC(nrow(polya_data), big.mark=",")`** reads were analyzed with Nanopolish and of these **`r formatC(nrow(polya_data_filtered), big.mark=",")` (`r round(nrow(polya_data_filtered) / nrow(polya_data) * 100, 1)`%)** were marked as satsifying the quality metric. The summary of QC is shown below for each analyzed sample.
+
+```{r wykresy_quality_controll, fig.width=10, fig.height=7,}
+
+nanopolish_qc <- nanotail::get_nanopolish_processing_info(polya_data,grouping_factor = "sample_name") #Tworzymy wektor o nazwie nanopolish_qc z funkcji get_nanopolish_processing_info i danych pochodzących z data frame polya_data. Grupującym czynnikiem jest nazwa próbki
+ 
+
+# reorder according to input_sample_table
+nanopolish_qc <- with(nanopolish_qc,  nanopolish_qc[order(sample_name), ]) #grupujemy po zmiennej sample_name
+
+
+nanopolish_qc_plot <- nanotail::plot_nanopolish_qc(nanopolish_qc,frequency = FALSE) + 
+                      labs(x="\nsample", y="count\n", fill="Nanopolish QC tag:") + 
+                      ggplot2::ggtitle("Read count plot")+ 
+                      ggplot2::theme_bw()
+
+ 
+
+nanopolish_qc_plot2 <- nanotail::plot_nanopolish_qc(nanopolish_qc,frequency = TRUE) + 
+                      labs(x="\nsample", y="frequency\n", fill="Nanopolish QC tag:") + 
+                      ggplot2::ggtitle("Read frequency plot")+
+                      ggplot2::theme_bw()
+nanopolish_qc_plot
+nanopolish_qc_plot2
+
+```
+
+# Mały komentarz
+powinniśmy mieć większość odczytów pass. Suffclip to odczyty niemogące być ładnie przypisane przez HMM i nanopolish do jednej z grup
+u trypanosoma i euglenin mamy inny sposób metylowaną strukturę 5'CAP -> dlatego niemozgliśmy ciągąc za cap przez
+u trypanosoma i euglenin jest ejszcze odcinek Splice Leader między CAP i 5'UTR. Jest on kodowany w innych miejscach w genomie
+
+
+################################################################################################################################################## 
+
+## Samples summary
+
+Basic summary of obtained counts and mean poly(A) lengths for each sample is shown below. Only reads passing Nanopolish filter are included.
+
+Transcript-level summary can be downloaded [here](arabidopsis_polyadata_summarized_samples_summary_per_transcript_14.12.2021.xlsx) #musimy podać ten plik i skopiować go do obecnego folderu w którym jesteśmy -> tworzymy odnośnik klikalny
+
+```{r SAMPL}
+################################################################################
+# SAMPLEWISE SUMMARY - FOR DISPLAY
+################################################################################
+summarized_polya_table_samples <- nanotail::summarize_polya(polya_data = polya_data_filtered, summary_factors = c("sample_name","group"),transcript_id_column = NULL) #A zobacz sobie w helpie
+
+
+#round the values so it would be more human-friendly -> zaokrąglamy
+summarized_polya_table_samples <- data.frame(summarized_polya_table_samples) %>% dplyr::mutate_if(is.numeric, ~round(., 3))
+ #zaokrąglamy do trzeciego miejsca po przecinku
+
+#align values so they display nicely
+summarized_polya_table_samples %>%  kable("html", escape = F,align=c(rep("l",2), "r", rep("c",5))) %>% kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),fixed_thead = T) %>%kableExtra::column_spec(1, bold = T) %>%  kableExtra::footnote(general="Polya_mean is the arithmetic mean of poly(A) lengths, whereas polya_gm_mean is a geometric mean of poly(A) lengths. polya_sd shows the standard deviation value.")
+
+```
+
+## Group summary
+
+Basic summary of obtained counts and mean poly(A) lengths for each group is shown below. Only reads passing Nanopolish filter are included.
+
+```{r GROUP->MODYFIKACJE}
+################################################################################
+# GROUPWISE SUMMARY - FOR DISPLAY - Aby porównać dwie grupy od siebie :)
+################################################################################
+summarized_polya_table_samples <- nanotail::summarize_polya(polya_data = polya_data_filtered, summary_factors = "group",transcript_id_column = NULL) #A zobacz sobie w helpie
+
+
+#round the values so it would be more human-friendly -> zaokrąglamy
+summarized_polya_table_samples <- data.frame(summarized_polya_table_samples) %>% dplyr::mutate_if(is.numeric, ~round(., 3))
+ 
+
+#align values so they display nicely
+summarized_polya_table_samples %>%  kable("html", escape = F,align=c(rep("l",2), "r", rep("c",5))) %>% kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),fixed_thead = T) %>%kableExtra::column_spec(1, bold = T) %>%  kableExtra::footnote(general="Polya_mean is the arithmetic mean of poly(A) lengths, whereas polya_gm_mean is a geometric mean of poly(A) lengths. polya_sd shows the standard deviation value.")
+
+```
+
+mamy funkcje do analizy i wizualizacji danych w nanotail
+
+```{r ploty}
+# based on https://stackoverflow.com/questions/46327431/facet-wrap-add-geom-hline
+StatMeanLine <- ggproto("StatMeanLine", Stat,
+  compute_group = function(data, scales) {
+    transform(data, yintercept=mean(y))
+  },
+  required_aes = c("x", "y")
+)
+stat_mean_line <- function(mapping = NULL, data = NULL, geom = "hline",
+                       position = "identity", na.rm = FALSE, show.legend = NA, 
+                       inherit.aes = TRUE, ...) {
+  layer(
+    stat = StatMeanLine, data = data, mapping = mapping, geom = geom, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, ...)
+  )
+}
+StatMedianLine <- ggproto("StatMedianLine", Stat,
+  compute_group = function(data, scales) {
+    transform(data, yintercept=median(y))
+  },
+  required_aes = c("x", "y")
+)
+stat_median_line <- function(mapping = NULL, data = NULL, geom = "hline",
+                       position = "identity", na.rm = FALSE, show.legend = NA, 
+                       inherit.aes = TRUE, ...) {
+  layer(
+    stat = StatMedianLine, data = data, mapping = mapping, geom = geom, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, ...)
+  )
+}
+StatModeLine <- ggproto("StatMedianLine", Stat,
+  compute_group = function(data, scales) {
+    transform(data, yintercept=modeest::mlv(y,method="density"))
+  },
+  required_aes = c("x", "y")
+)
+stat_mode_line <- function(mapping = NULL, data = NULL, geom = "hline",
+                       position = "identity", na.rm = FALSE, show.legend = NA, 
+                       inherit.aes = TRUE, ...) {
+  layer(
+    stat = StatModeLine, data = data, mapping = mapping, geom = geom, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, ...)
+  )
+}
+```
+
+
+```{r nie mogę wyświetlić r center_values}
+##Per sample density
+
+cat("Plot below shows the scaled density of calculated poly(A) lengths for each sample. Dashed lines represent `r center_values` values for each sample.")
+```
+
+
+
+```{r}
+plot_polya_distribution(polya_data_filtered, parameter_to_plot="polya_length", groupingFactor="sample_name", show_center_values = "median")
+# na wykresie widać, że BSF1 -> 
+  #ma pik w niskich dlugościach odczytów ogonów -> mogła się uszkodzić w trakcie
+  # jest sporo bardziej obniżona w gęstości
+  # PCF2 nie jest już takie złe :)
+
+#okey więc szukamy co możemy odrzucić lub które dane są do zbadania
+#szukamy w go term -> zależności od lokalizacji i zbieżnością z transkryptami wchodzącymi w rekacje z układem odpornościowym gospodarza
+```
+
+```{r}
+plot_polya_boxplot(polya_data_filtered, groupingFactor="sample_name", violin = TRUE) + ggplot2::scale_fill_manual(values = c("red", "blue", "green", "yellow")) #Komenda boxplot bierze dane z polya_data_filtered i jako czynnik brany pod uwagę to "sample_name", nakładamy violin, bierzemy funkcję z ggplot2 i ręcznie układamy kolory ale coś nie idzie :()
+# dopiero teraz widzimy na violinplot że BSF1 mamy różnice -> więcej krótkich odczytów. Ale to nie znaczy że coś jest złęgo. Dopiero na następnych analizach możemy to stwierdzić
+```
+
+```{r}
+g.plot <- ggplot2::ggplot(polya_data_filtered, aes(x=sample_name,y=polya_length, fill=group,stat=sample_name)) + coord_cartesian(ylim = c(0, 200)) + scale_x_discrete() 
+g.violin <- ggplot2::geom_violin(aes(), alpha=0.6,scale = 'width')
+g.boxplot <- ggplot2::geom_boxplot(width=0.2,fill="white",notch = TRUE,outlier.size = 0, outlier.shape=NA)
+g.color <- ggplot2::scale_fill_manual(values=c("#bd392f", "#183a6e"))
+
+
+plt <- g.plot + g.violin + g.boxplot +theme_bw()+ g.color
+plt
+
+#każdy z tych elementów złożony w kupę tworzy wykres 
+#ggsave(filename="distribution_tail.svg", plot=plt, width=11, height=6) -> zapisuje w miejscu PWD
+# grupami zrobię samemu
+```
+
+
+```{r}
+plot_polya_distribution(polya_data_filtered, parameter_to_plot="polya_length", groupingFactor="group", show_center_values = "median")
+
+# na wykresie widać, że BSF1 -> 
+  #ma pik w niskich dlugościach odczytów ogonów -> mogła się uszkodzić w trakcie
+  # jest sporo bardziej obniżona w gęstości
+  # PCF2 nie jest już takie złe :)
+
+#okey więc szukamy co możemy odrzucić lub które dane są do zbadania
+#szukamy w go term -> zależności od lokalizacji i zbieżnością z transkryptami wchodzącymi w rekacje z układem odpornościowym gospodarza
+```
+
+```{r}
+plot_polya_boxplot(polya_data_filtered, groupingFactor="group", violin = TRUE) + ggplot2::scale_fill_manual(values = c("red", "blue", "green", "yellow")) #Komenda boxplot bierze dane z polya_data_filtered i jako czynnik brany pod uwagę to "group", nakładamy violin, bierzemy funkcję z ggplot2 i ręcznie układamy kolory ale coś nie idzie :()
+# dopiero teraz widzimy na violinplot że BSF1 mamy różnice -> więcej krótkich odczytów. Ale to nie znaczy że coś jest złęgo. Dopiero na następnych analizach możemy to stwierdzić
+```
+
+```{r wykres_na_grupy}
+g.plot <- ggplot2::ggplot(polya_data_filtered, aes(x=group,y=polya_length, fill=group,stat=group)) + coord_cartesian(ylim = c(0, 200)) + scale_x_discrete() 
+g.violin <- ggplot2::geom_violin(aes(), alpha=0.7,scale = 'width')
+g.boxplot <- ggplot2::geom_boxplot(width=0.2,fill="#caeaed",notch = TRUE,outlier.size = 0, outlier.shape=NA)
+g.color <- ggplot2::scale_fill_manual(values=c("#c7c542", "#c77742"))
+
+
+plt <- g.plot + g.violin + g.boxplot +theme_bw()+ g.color
+plt
+
+#każdy z tych elementów złożony w kupę tworzy wykres 
+#ggsave(filename="distribution_tail.svg", plot=plt, width=11, height=6) -> zapisuje w miejscu PWD
+# grupami zrobię samemu
+```
+
+
+```{r}
+################################################################################
+# SUMMARIES PER TRANSCRIPT, SAMPLE & GROUP
+################################################################################
+#Dostajemy informacje ile odczytów wpadło na dany transkrypt więc wyszukujemy po ensembl ID -> ptrzebujemy próbek. Wcześniej mieliśmy wartość NULL -> scaliło wszelkie ID od kupy
+
+
+ 
+
+summarized_polya_table_per_transcript <- nanotail::summarize_polya(polya_data = polya_data_filtered,summary_factors = "ensembl_transcript_id_full",transcript_id_column = "ensembl_transcript_id_short");summarized_polya_table_per_transcript #grupujemy transkrypty po ID transkryptu żeby wiedzieć ile ogółem było odczytów na każdy transkrypt -> przelicznik na normalizacje danych w PCA. Coś niby jak nasza frekwencja na początku w gg plot. GG plot robi to od razu ale przy PCA musimy sami zrobić taką tabel. 
+#Brak informacji o grupach i próbkach bo nie podaliśmy takiej informacji
+
+ 
+
+polya_data_summarized_samples<-nanotail::summarize_polya(polya_data = polya_data_filtered,summary_factors = c("sample_name","group"),transcript_id_column = "ensembl_transcript_id_short"); polya_data_summarized_samples
+#A tu już mamy zliczone po próbkach i grupach -> wiemy ile razy coś wystąpiło i w jakiej próbce
+
+ 
+
+polya_data_summarized_groups<-summarize_polya(polya_data = polya_data_filtered,summary_factors = c("group"),transcript_id_column = "ensembl_transcript_id_short");polya_data_summarized_groups
+#mamy tlko grupe a brak próbki
+
+#wszystkie wykorzystamy do robienia innych danych 
+#pierwsza do normalizacja
+#druga np do testów statystycznych na podstawie mediany itp -> oraz do PCA
+ 
+
+```
+
+
+########################## kolejny dzień
+## Principal Component Analysis {.tabset .tabset-fade .tabset-pills}
+
+ 
+
+`r if(length(samples_names)>1) {"To further assess samples similarity, Principal Component Analysis was calculated. In the ideal situation, all samples from the same group should cluster together on the plots." } else {"Only single sample analyzed - cannot calculate PCA"}`
+
+ 
+
+### Counts
+
+ 
+
+`r if(length(samples_names)>1) {"PCA was calculated using counts for each transcript in the samples." } else {"Only single sample analyzed - cannot calculate PCA"}`
+
+ 
+
+ 
+
+```{r fig.width=7, fig.height=7,}
+################################################################################
+# PCA - samples colored groupwise for clarity
+################################################################################
+    polya_pca_counts<-nanotail::calculate_pca(polya_data_summarized_samples,parameter="counts",transcript_id_column = "ensembl_transcript_id_short")
+    nanotail::plot_polyA_PCA(polya_pca_counts$pca,samples_names = polya_pca_counts$sample_names) + expand_limits(x=c(-2,2), y=c(0, 0.9))+ ggplot2::geom_label(aes(label=polya_pca_counts$sample_names, color = factor(polya_pca_counts$sample_names))) + theme(legend.position="none"); polya_pca_counts
+    #Liczebność odczytów na transkrypt
+#nasze wnioski:
+    #widizmy, że próbki PCF są blisko siebie więc są "blisko spokrewnione". Niepokój budzi znaczna odległóść BSF1 od BSF2 -> nie wiemy jeszcze który z nich jest mniej reprezentatywny.  Nie panikować a analizować co można zrobić. Obecnie wnioski jakie można wyciągnąć to to, że PCF1 i PCF2 sąbliższej relacji niż z grupy BSF
+    
+    # z poprzedniego wykresu widzimy żę ma BSF1 duży pik na bardzo krótkich ogonach (mitochondrialne mRNA). To kolejna wskazówka mówiąca że BSF1 jest do odrzucenia. Mogą się tam ładadować BARDZO krótkie nukleotydy -> NAWET POCHODZĄCE Z DEGRADACJI PRÓBKI albo inne śród transkryptowe regiony AT bogate
+    
+    #sprawdźmy jak będzie to wyglądało tylko na długościach ogonów
+    
+    #są to surowe zliczenia odczytów do transkryptu i urozmaicone przez algorytm (przeskalowane) -> można je porównywać bo podobne geny podobnie wyrażają ale tylko PCF1 i PCF2
+    #wiemy, że jedno z powtórzeń BSF odstaje od drugiego -> poziom ekspresji BSF1 (mieliśmy krótsze ogony!) odstaje od BSF2 -> możemy zacząć przypuszczać, że problem jest z BSF1 -> potrzebujemy więcej analizy
+    
+    
+    #jak analizować ten wykres
+    # skala bardzo umowna i wogóle wszystko -> tylko na oko -> nie jest liczbowa
+    #Żeby dowiedzieć się czemu BSF2 jest bardziej po rpawej niż po lewej musielibyśmy wejsć w algorytm -> nie wnikaj
+    # my go troche wymusiliśmy bo narzuciliśmy algorytmowi jakie dane brać pod uwagę
+    #tylko do wglądu żeby zobaczyć jak się grupuje
+ 
+
+```
+
+ 
+
+### Poly(A) length
+
+ 
+
+`r if(length(samples_names)>1) {paste0("PCA was calculated based on **",parameter_to_use,"** values, using transcripts with at least **",minimum_counts,"** reads per transcript in all samples. ") } else {"Only single sample analyzed - cannot calculate PCA"}`
+
+ 
+
+ 
+
+```{r fig.width=7, fig.height=7,}
+################################################################################
+# PCA - samples colored groupwise for clarity
+################################################################################
+#długości ogonów
+
+    polya_pca<-calculate_pca(polya_data_summarized_samples %>% dplyr::semi_join(summarized_polya_table_per_transcript %>% dplyr::filter(counts > 10), by = "ensembl_transcript_id_short"), parameter = "polya_gm_mean", transcript_id_column = "ensembl_transcript_id_short")
+    plot_polyA_PCA(polya_pca$pca,samples_names = polya_pca$sample_names) + expand_limits(x=c(-2,2), y=c(-0.1, 0.9)) + geom_label(aes(label=polya_pca_counts$sample_names, color = factor(polya_pca_counts$sample_names)))+ theme(legend.position="none")
+    
+    #niestety długości ogonów się nie podobają
+    #wykres wiolinowy jest globalny -> tutaj one są przeskalowane i dają dokładniejsze informacje -> bierzemy informacje na podstawie każdego transkryptu
+    # spodziewaliśmy się dwa klastry BSF i PCF
+    #Info zwrotna: mamy slaby zestaw danych, który musimy urozmaicić
+    #musimy wziąć pod uwagę dwa typy wykresów PCA i violin
+    #jest to inny model analizy danych niż differential expression
+    
+    #po tym wykresie myślimy, że może lepiej nie wyrzucać BSF1 bo jest nawet coś znaczący. Ale do differential expression nie wzielibyśmy BSF1. Najlepiej byłoby zrobić kolejne powtózenie. Ale od biedy można zrobić analizę łącznie z BSF1. Ale niektóre programy mogą zmniejszac wpływ wadliwej próbki
+    
+    #boimy się łądnych wyników !!!! nie mogą one być zbyt idealne bo to znaczy błąd ludzki
+    
+    # to jest wciaż element EDA - experimental data analises -> cały czas patrzymy żeby określić czy te dane sa użyteczne
+```
+
+
+
+
+
+
+### counts correlation
+Spearman correlation matrix was calculated using counts for each transcript in the samples.
+ 
+
+### counts correlation
+Spearman correlation matrix was calculated using counts for each transcript in the samples.
+ 
+
+```{r,fig.width=6,fig.height=6}
+#zliczenia
+polya_data_summarized_samples_for_corr<-polya_data_summarized_samples %>% dplyr::select(ensembl_transcript_id_short,counts,sample_name) %>% tidyr::spread(key = sample_name,value = counts)
+#nazwa nowej zmiennej <- utworzona na podstawie starej zmiennej %>% z pakietu dplyr korzystamy z funkcji wybierającej tylko trzy interesujące nas kolumny  %>% spread co tak naprawdę robi?
+
+cormat <- round(cor(as.matrix(polya_data_summarized_samples_for_corr[,-1]),use="complete.obs",method="spearman"),2) #obliczamy spearmana, zaokrąglamy i zapisujemy w zmiennej cormat
+
+gplots::heatmap.2(cormat,trace = "none",density.info = "none",breaks=c(0.01,seq(0.05,1.05,by=0.05)),col=colorRampPalette(c("#F7FBFF","#CFE1F2","#5AA2CF","#1664AB","#08306B"))(21),margins=c(10,10)) #troche słaba skala nie pozwalająca na dokładniejsz określenie bliższej korelacji, ale dzięki temu wiemy że te próbki są mimo wszystko całkiem nieźle (jak na kolorki) skorelowane
+```
+
+ 
+
+## Samples correlation matrix {.tabset .tabset-fade .tabset-pills}
+
+To assess inter- and intra-group variability, Spearman correlations were calculated for each pair of samples, taking into account transcript abundances (counts) and calculated poly(A) lengths. In the ideal case, samples from the same group should cluster together and have high correlation values.
+
+### poly(A) lengths correlation
+Spearman correlation matrix was calculated based on **polya_gm_mean** values, using transcripts with at least **20** reads per transcript in all samples.
+ 
+
+```{r,fig.width=6,fig.height=6}
+polya_data_summarized_samples_for_corr<-polya_data_summarized_samples %>% dplyr::semi_join(summarized_polya_table_per_transcript %>% dplyr::filter(counts>20) ,by="ensembl_transcript_id_short") %>% dplyr::select("ensembl_transcript_id_short","polya_gm_mean",sample_name) %>% tidyr::spread(key = sample_name,value = "polya_gm_mean") #znowu robimy zmienną o naszej nazwie na podstawie <- już wcześniej danych %>% z pakietu dplyr bierzemy funkcję semi_join która zwraca wszystkie rzędy z danych połaczone do y, ale wybiera tylko te odczyty o dłuogości > 20. Wyjściowe dane mają zawierać ID odczytów. Grupujemy je również po ID, średniej długości i nazwie próbki. 
+
+cormat <- round(cor(as.matrix(polya_data_summarized_samples_for_corr[,-1]),use="complete.obs",method = "spearman"),2) #macierz zależnośći spearmana między nimi wszystkimi
+gplots::heatmap.2(cormat,trace = "none",density.info ="none", breaks=c(0.01,seq(0.05,1.05,by=0.05)),col=colorRampPalette(c("#F7FBFF","#CFE1F2","#5AA2CF","#1664AB","#08306B"))(21), margins = c(10,10)) # i wykres na tej podstawie
+
+```
+
+
+```{r}
+#tutaj sporo samemu się bawiłem -> znajdziemy odpowiedniki funkcji napisanych z poradnika i przez Natalię, które często znaczą o samo
+library(biomaRt)
+biomaRt::listMarts() #lista danych z mart -> wyświetla obiekty klasy mart
+biomaRt::listEnsembl() #lista zbiorów danych z ensembl -> wyświetla obiekty klasy ensembl
+ensembl <- useEnsembl(biomart = "genes") #wybieramy jedną z baz danych - geny. Wnikając w to bardziej - każdy gatunek jest osobną bazą danych
+datasets <- listDatasets(ensembl); datasets
+biomaRt::searchDatasets(mart = ensembl) #ta funkcja i ta wyżej robią dokładnie to samo - pokazują dostępne listy organizmów, z tą różnicą że search wyszukuje i zwraca, a wyżej tworzymy oddzielny zbiór
+
+
+ensembl <- biomaRt::useMart(biomart = 'ENSEMBL_MART_ENSEMBL') 
+
+#do tej pory narazie sprawdzaliśmy gdzie mogła by być trypanosoma - ale JEJ TU NIE MA!!!!
+biomaRt::listEnsemblGenomes() #pokazuje drugie składowsiko danych -> niezły pierdzielnik tu mają! Ale przynajmniej są protisty i trypanosoma
+#biomaRt::searchDatasets(mart = protisty_roboczo) #pokazuje dane wszystkich protistów. Ale musimy się odnieść do listy protisty_roboczo, którą musimy wcześnie stworzyć protisty_roboczo <- useEnsemblGenomes(biomart = "protists_mart")
+
+
+
+ensembl_protist <- biomaRt::useEnsemblGenomes(biomart = "protists_mart", dataset="tbrucei_eg_gene") #pobraliśmy dane z ensembl protist dla Trypanosomy brucei
+
+#Ściągamy adnotacje z serwera
+ensembl_ids = unique(polya_data_filtered$ensembl_transcript_id_short) #do zmiennej ensemble_ids za pomocą funkcji unique przypisujemy z pliku polya_data_filtered wartości znane z bazy ensembla jako id_short. Funkcja unique zwraca nam wartości BEZ DUPLIKATÓW. Odsialiśmy duplikaty występujące w kolumnie ensembl_trascript_id_short w dokumencie polya_data_filtered, który znamy już wcześniej. Całość zapisaliśmy do ensembl_ids
+ensembl_ids <- ensembl_ids[!is.na(ensembl_ids)] #A tutaj odsiewamy te elementy które nie mają wartości. Patrz wyżej.
+
+
+biomaRt_annotation <- biomaRt::getBM(attributes=c('description', 'transcript_biotype', 'ensembl_gene_id', 'ensembl_transcript_id'),
+      filters = "ensembl_gene_id",
+      mart = ensembl_protist,
+      values = ensembl_ids) 
+#opiszę tą funkcję oficjalnie. getBM z pakietu biomaRt służy do stworzenia query/zapytanie do bazy Ensembl. Musimypodać trzy argumenty. Pierwszy - atrybuty po jakich będziemy szukać. U nas jest to opis, typ transkryptu, ID genu oraz ID transkryptu.Potem filtrujemy to przez ensembl_gene_id -> można sprawdzić aktualnie dostępne filtry listFilters(). Mart określa zbiór danych skąd będziemy szukąć, my szukamy w zbiorze który wcześniej utworzyliśmy. Values używamy, gdy mamy sporo innych opcji i to wspomaga filtrowaniu
+
+#otrzymana tabela biomaRt_annotation zawiera tylko sekwencje kodujące białka. Dlaczego? Dlatego, że naszym inputem były RNA poliadenylowane. A ich dalsza droga w większości przypadków wiąże się z tworzeniem protein.
+
+#wynikowo, mamy zadnotowan transkrypty wraz z opisami, o ich funkcjach, ich oficjalne ID (genów i transkryptów)
+
+
+#info na przyszłość. Atrybuty w funkcji getBM są różne dla każdego marta. Należy je przejrzeć za pomocą funkcji listAttributes(ensembl_protist)
+
+#co nam się niepodoba w tej adnotacji?
+#mamy mało recordów! raptem 50. Ponadto trudno będzie nam to połączyć z obecną już polya_data_filtered -> ale to łatwizna
+#dlaczego mamy tak mało recordów sprawdzamy w ten sposób:
+biomaRt::searchDatasets(mart = ensembl_protist)
+#dane pochodzą z 2005 roku... nikt tego nie aktualizuje więc porzucamy ensembl
+
+#########################
+#SPALONE
+########################
+
+#ale mimo to się pobawie w zamianę nazw kolumn
+biomaRt_annotation$ensembl_transcript_id_short <- biomaRt_annotation$ensembl_gene_id #do biomaRt_annotation dodaliśmy nową kolumne o danych ze starej - zmieniona nazwa
+
+
+#polya_data_filtered %>% 
+  #dplyr::left_join(biomaRt_annotation, by = "ensembl_transcript_id_short") # lepiej nie robić nadpisując
+```
+
+
+```{r}
+# ładujemy plik z dysku i łączymy z kopią tabeli polya_data_filtered
+
+tritryp_mart_export.txt <- read_tsv("tritryp_mart_export.txt", show_col_types = FALSE)
+
+merged_polya_data_filtered_plus_tritryp_mart_export <- polya_data_filtered
+merged_polya_data_filtered_plus_tritryp_mart_export <- merged_polya_data_filtered_plus_tritryp_mart_export[, -24] #usunęliśmy kolumnę ostatnią - ensembl_transcript_id_short
+
+
+#wyrzućmy teraz wszystkie spacje z tritryp -> zamieniamy spacje na podłogi bo unix nie lubi
+colnames(tritryp_mart_export.txt) <- gsub(" ", "_", colnames(tritryp_mart_export.txt))
+
+
+
+
+merged_polya_data_filtered_plus_tritryp_mart_export <- merged_polya_data_filtered_plus_tritryp_mart_export %>% 
+  dplyr::mutate(ensembl_transcript_id_short = gsub('.{5}$', '', ensembl_transcript_id_full)) #dodaliśmy w końcu nową kolumnę ensembl_transcript_id_short pozbawioną fragmentu :mRNA ale nie wyświetla się ta informacja w environment. Trudno, lecimy dalej
+
+
+#Zanim zmergujemy te tabele, musimy zmienić nazwę w tritryp_mart
+colnames(tritryp_mart_export.txt)[1] <- "ensembl_transcript_id_short"
+  # do stworzenia nowej tabeli wykorzystujemy dane z polya_data_filtered
+
+merged_polya_data_filtered_plus_tritryp_mart_export <- merged_polya_data_filtered_plus_tritryp_mart_export %>% 
+  dplyr::left_join(tritryp_mart_export.txt, by = "ensembl_transcript_id_short") #za pomocą dplyr::left_join łączymy (x to polya) x z y (tritryp) według klucza ensembl
+
+#nie podoba mi się, że isntieje wiele różnych wersji białek hypothethical protein (..) scalmy je. Tak naprawdę ucieliśmy wszystkie inne znaki, zostawiając jako treść "hypothetical protein"
+#merged_polya_data_filtered_plus_tritryp_mart_export <- merged_polya_data_filtered_plus_tritryp_mart_export %>% 
+  #mutate(description = substring(Gene_description, 1, 20))
+#BARDZO ZŁY POMYSŁ - UCIĄŁEM TEŻ WSZYSTKIE INNE NAZWY DO 20 MIEJSCA
+
+
+#zmieniamy strategię. Wykorzystamy funkcję filter z dplyr by stworzyć nową ramkę danych na podstawie której stworzymy wykresy
+
+mitochondrial_VSG_antigen_RNAs_plot <- merged_polya_data_filtered_plus_tritryp_mart_export %>% 
+  dplyr::filter(grepl("mitochondrial|VSG|antig", Gene_description)) #zrobiliśmy nową ramkę zawierającą te dane, które w kolumne gene_description w pliku merged_polya... maja słowa mitochondria, VSG lub antig
+
+#teraz musimy uporządkować naszą tabelę mitochondrial_VSG... tak by przypisać do nowej kolumny charakter typu RNA który jest wyrażony w kolumnie descript
+mitochondrial_VSG_antigen_RNAs_plot <- mitochondrial_VSG_antigen_RNAs_plot %>% 
+  mutate(group_rna_description = case_when(
+    grepl("mitochondrial", Gene_description) ~ "mitochondrial",
+    grepl("VSG", Gene_description) ~ "VSG",
+    grepl("antig", Gene_description) ~ "immunology"
+  ))
+
+
+
+
+
+
+#ten sposób nam nie zadziałał, nowy df zawierał dane NA z tritryp_mart. Bo kolumna ensembl_transcript_id_short w polya_data_filtered miała inne wartości niż ta sama kolumna w tritryp_mart_export.txt By to rozwiązać, musimy z polya_data_filtered stworzyć nową kolumnę niezawierającą sufiksu mRNA (jest to artefakt metody, nanopotail stworzył dziwną kolumnę bo spodziewał się mapowaniai do bazy z ENSEMBL a my mu daliśmy inną referencję. Więc dostał bzika)
+
+#najpierw musimy wyrzucić tą dziwną błędną kolumnę stworzoną przez nanotaila
+
+
+
+```
+
+```{r}
+################################################################################################################################
+#Wykresy
+################################################################################################################################
+
+
+
+#W końcu się udało
+#robimy teraz wykresy violin i density dla transkryptów mitochondrialnych i związanych z odpoweidzią immunologiczną
+
+
+#violin mitochondrial
+wiolinowy<- ggplot2::ggplot(mitochondrial_VSG_antigen_RNAs_plot, aes(x = group_rna_description, y = polya_length, colour = group_rna_description, fill = group_rna_description)) +
+  labs(title = "Porównanie długości ogonów poli(A) na przestrzeni poszczególnych grup", x = "grupy transkryptów", y = "długość ogonów poli(A)") + 
+ geom_violin(show.legend = FALSE, alpha = 0.6) + 
+  ggplot2::facet_wrap(~group)+
+  geom_boxplot(width = 0.2, fill="snow", notch = TRUE, show.legend = FALSE); wiolinowy
+  
+#violinowy z nanotaila
+wiolinowy_nanotail <- mitochondrial_VSG_antigen_RNAs_plot %>% 
+  plot_polya_boxplot(groupingFactor = "group", violin = TRUE)+
+  ggplot2::facet_wrap(~group_rna_description, ncol=1)+
+  ggplot2::scale_fill_manual(values=c("#bd392f", "#183a6e"));wiolinowy_nanotail
+#brak wypełnienia i kolorków
+
+
+
+
+
+
+#gestosci
+gestosci<- ggplot2::ggplot(mitochondrial_VSG_antigen_RNAs_plot, aes(x = polya_length, colour = group_rna_description)) +
+  labs(title = "Rozkład długości ogonów poli(A) na przestrzeni poszczególnych grup", x = "Długość ogonów poli(A)", y = "Gęstość") +
+  geom_density(alpha = 0.3, size = 0.7); gestosci
+
+#a tuatj z nanotaila
+gestosci_nanotail <- mitochondrial_VSG_antigen_RNAs_plot %>% 
+  plot_polya_distribution(groupingFactor = "group", parameter_to_plot = "polya_length", show_center_values = "median", mode_method = "density")+
+  ggplot2::facet_wrap(~group_rna_description, ncol = 1); gestosci_nanotail
+#ten jest o wiele lepszy bo daje nam porównanie na przestrzeni próbek BSF i PCF -> to właśnie badamy
+#ale uwaga! Pokazywana średnia dotyczy średniej ogólnej, a nie poszczególnej dla każdej grupy
+
+#VSG protein to białko odpowiedzialne za oszukiwanie układu odpornościowego gospodarza Trypanosomy
+```
+
+```{r}
+#mamy na razie zadnotowany zbiór danych i wykresy. Robimy dalej nanotaila
+#Używna funkcja calculate_polya_stats() informuje czy są znaczące różnice w długościach polya między próbkami BSF i PCF. Robi to testem wilcoxona
+calculated_polya_stats <- nanotail::calculate_polya_stats(polya_data_filtered, transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median") #wiem, że nie trzeba pisać absolutnie wszystkiego lecz to dobra próba przypomnienia sobie po wakacjacg
+
+#udało się zrobić - prawdiłowy dataframe jest polya_data_filtered, nie polya_data_filtered_summarise_group
+#Wynik jaki się udało uzyskać to porównanie czy dany transkrypt różni się ekspresją między dwoma próbkami BSF i PCF -> Wilcoxon
+#omówienie	
+#Tb927.11.18700.1 w próbce BSF na prawie że 100% możemy stwierdzić, że rózni się ekspresją od próbki PCF. Podane jest liczba transkryptów, średnia ich mediana itp. Dodatkowo: Fold change - parametr opisujący zmianę w ekspresji - jest znormalizowany do głębokości sekwencjonowania (przeskalowany) jeden z podstawowych parametrów, p-value podawany osobno dla każdego transkryptu jako prawdopodobieństwo uzyskane z testu Wilcoxona.  padj jako zunifikowana i przeskalowana wartość p-value do obiektywniejszego przedstawiania różnic, effect size small czyli niewielka siła relacji między dwoma zmiennymi mająca jednak mniejsze znaczenie niż FDR. Gdy w jednej grupie  nie ma wystarczająco wielu transkryptów albo coś tam to w kolumnie stats_code pojawia sie stosowna informacja o przyczynach - możemy to manipulować stosując min_reads = 5
+
+
+#ogólne wnioski:
+#      Kategoria Ilość
+#1    padj < 0.05    31
+#2    padj > 0.05   862
+#3 p.value < 0.05   122
+#4 p.value > 0.05   771
+#reszta z nich to NA czyli dane... jakie? niepodlegające policzeniu?
+
+
+#mamy 334 niewielkich relacji między zmiennymi, 86 średnich, 16 dużych. 457 nieistotnych. Reszta jest niemierzalna -> brak danych NA
+
+
+stats_code_summary <- data.frame(c(unique(calculated_polya_stats$stats_code)))
+stats_code_summary_1 <- data.frame(NA_ilość_wystąpień = c(sum(grepl("OK", calculated_polya_stats$stats_code, ignore.case = TRUE)), sum(grepl("LOW COUNTS FOR BOTH GROUPS", calculated_polya_stats$stats_code, ignore.case = TRUE)), sum(grepl("LOW COUNT FOR ONE GROUP", calculated_polya_stats$stats_code, ignore.case = TRUE)), sum(grepl("DATA FOR ONE GROUP NOT AVAILABLE", calculated_polya_stats$stats_code, ignore.case = TRUE))))
+stats_code_summary <- cbind(stats_code_summary, stats_code_summary_1)
+#spośród 4279 odczytów mamy  893 OK 720 niską ilość odczytów dla obu grup, 532 dla obu grup i brak danych dla jednej z grup 2134. Zatem możemy się posiłkowac tylko 20% ogólnej liczby odczytów
+
+############# WAŻNE ##################
+#Ogólnie spośród początkowych 4200 odczytów mamy podliczone niewiele, dlatego że mamy doczynienia z różnymi stadiami rozwojowymi które cechują się różną ekspresją. To ładnie dowodzi, że niektóre transkrypty występują tylko w jednym stadium. I jest to w porządku. STadia traktujmy jako dwa blisko spokrewnione organizmy. Nawet ludzkie komórki wątroba vs plemnik znacząco się różnią od siebie.
+
+
+
+# FDR na poziomie <0.05 ma niewielki odsetek transkryptów, tylko 31. Wszystkie z nich są OK z  dużą liczbą odczytów. Poza tym cechują się bardzo niskim, lubianym przez nas padj <0.05. Oznacza to, że mamy kontrolę nad błędami I rodzajui te dane (mimo ich niewielkiej liczebności) są dobrze opisane, lecz nie wiem na ile mogą być reprezentatywne dla ogółu
+
+
+
+
+# na przestrzeni całości różnice w długości odczytów to bagatela -3 (mediana). Z bardzo bardzo nieudanego i prowizorycznego wykresu widać że większość różnic jest jednak w okolicy zero. ggplot(data = calculated_polya_stats, aes(x = length_diff, y = PCF_counts)) + geom_point()
+
+
+
+
+#########################podsumowanie ważne#############################
+#ogólnie to dla porównywaniu różnic z ekspresji, dla danych istotnych statystycznie różnice są niewielkie albo dotyczą niewielkiej puli transkryptów - mamy bardzo niewiele genów w których te różnice są policzalne. W analizach musimy uwzględnić te dane pochodzące wyłącznie od jednego stadium
+#brakami w etykietowaniu transkryptów nie ma co się przejmować - możemy  je uwzględnić w analizach globalncyh.
+#Dla nas najważniejsza jest kolumna lenght_diff
+#jednak oczywistym jest, że w wielu przypadkach, mimo istnienia różnic (p-value) nie zaobserwowaliśmy różnic w długości ogonów albo na odwrót. Zostało to wypaczone przez statystykę, ponieważ rozkład długości ogonów dla danego transkryptu może się różnić od normalnego a bliżej mu do bimodalnego lub innego.
+
+# te dane które mamy w tabeli to nie jest differential exspression a differential adenylation (różnice w dystrybujci długości ogonów polia)
+
+
+#dla lepszego zobrazowania z czym mamy do czynienia zrobimy też differential expression - dlatego też mapowaliśmy do genomu
+```
+
+
+```{r}
+
+#Przekształćmy teraz tabele tak byśmy mogli dodać informacje co statystycznie różniące się transkrypty kodują
+#1. pozbądźmy się paskudnek :mRNA
+#2. utnijmy tabele z wartości gdzie FDR nie spełnia wymogów bycia poniżej 0.05
+#3. zmergujmy z tabelą gdzie mamy funkcje ich podane (tritryp) interesują nas tylko gene_description a czynnikiem wiążącym będzie nazwa
+#4. porównanie
+
+#1. Delete :mRNA
+calculated_polya_stats$transcript <- gsub(":mRNA", "", calculated_polya_stats$transcript)
+#2. Tworzymy nową tabelę
+calculated_polya_stats_FDR_greather_than_alpha <- subset(calculated_polya_stats, grepl("FDR<0.05", significance))
+    #widzimy w nowej tabeli, że różnica między transkryptami wynosi już 11(mediana)
+#3. Tworzymy nową kolumne na bazie transcript o nowej nazwie ensembl_transcript_id_short
+calculated_polya_stats_FDR_greather_than_alpha <- calculated_polya_stats_FDR_greather_than_alpha %>% 
+  mutate(ensembl_transcript_id_short = transcript)
+#4. mergujemy te dane z tritryp
+calculated_polya_stats_FDR_greather_than_alpha <- calculated_polya_stats_FDR_greather_than_alpha %>% 
+  dplyr::left_join(tritryp_mart_export.txt, by="ensembl_transcript_id_short")
+calculated_polya_stats_FDR_greather_than_alpha <- calculated_polya_stats_FDR_greather_than_alpha[, 1:(ncol(calculated_polya_stats_FDR_greather_than_alpha) - 5)] #usuwamy ostatnie pięc weirszy jako artefakty z tritryp
+
+```
+
+
+```{r}
+#próbujemy odfiltrować is.na
+
+#przelicz statystyki ponownie, tym razem odfiltruj z inputu dla funkcji calculate_polya_stats() wszystkie te transkrypty, które nie mają nic w kolumnie Gene_description. Podpowiedź: skorzystaj z dplyra i funkcji is.na(). Pamiętaj żeby zanegować przed is.na().
+
+#nie rozumiem do końca polecenia (mój input to znaczy polya_data_filtered nie posiada kolumny gene_description.) więc zrobie na włąsną rękę według własnej interpretacji. Do pierwotnego outputu możemy dodać kolumnę gene_decriptino z tabeli merged_polya.... albo zrobić nanotail::calculate_polya_stats na inpucie z merged_polya...
+
+
+#Spróbujmy z tym: ensembl_ids <- ensembl_ids[!is.na(ensembl_ids)]
+calculated_polya_stats_without_is_na <- nanotail::calculate_polya_stats(merged_polya_data_filtered_plus_tritryp_mart_export, transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median") %>% 
+  dplyr::filter_all(all_vars(!is.na(.)))
+
+#calculated_polya_stats_without_is_na <- nanotail::calculate_polya_stats(merged_polya_data_filtered_plus_tritryp_mart_export, transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median") %>% 
+  #dplyr::select(all_vars(!is.na(.)))
+
+#calculated_polya_stats_without_is_na <- nanotail::calculate_polya_stats(merged_polya_data_filtered_plus_tritryp_mart_export, transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", condition1 = !is.na(), stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median")
+
+#calculated_polya_stats_without_is_na <- nanotail::calculate_polya_stats(merged_polya_data_filtered_plus_tritryp_mart_export, transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", condition1 = !is.na(calculated_polya_stats_FDR_greather_than_alpha$Gene_description), stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median")
+
+#calculated_polya_stats_without_is_na <- nanotail::calculate_polya_stats(merged_polya_data_filtered_plus_tritryp_mart_export[!is.na(merged_polya_data_filtered_plus_tritryp_mart_export)], transcript_id_column = "transcript", min_reads = 10, grouping_factor = "group", stat_test = "Wilcoxon", alpha = 0.05, add_summary = TRUE, length_summary_to_show = "median")
+
+
+#NO W KOŃCU MI SIĘ UDAŁO!
+#kluczem było dplyr::filter_all(all_vars(!is.na(.)))
+```
+
+
+
+
+```{r}
+#########################################OMÓWIENIE NOWEJ TABELI#########################################################
+#przede wszystkim nowa tabela jest 5x krótsza - ma 800 odczytów. To znaczy, dla przypomnienia co robiliśmy: Nowa tabela powstała na bazie danych, które nie zawierają wartośći NA w kolumnie "gene_description", a zatem policzyliśmy statystyki tylko dla odczytów rozpoznanych przez bazę tritryp.
+
+count_NA_vs_without_NA <- data.frame(
+  group = c("NA", "without"),
+  `p.value<0.05` = c(122, 122),
+  `p.value>0.05` = c(771, 771),
+  `padj<0.05` = c(31, 31),
+  `padj>0.05` = c(862, 862)
+)
+#ale tak jak widać, w tabeli z odfiltrowanymi transkryptami bez opisu znajduje się tyle samo
+
+#statystyka porównująca ilość odczytów występujących w tabelach oraz przyczyn niewystępowania pełnych danych na podstawie policzonego wcześniej stats_code_summary
+stats_code_summary$without_ilość_wystąpień <- c(893, 0, 0, 0)
+#c.unique.calculated_polya_stats.stats_code.. NA_ilość_wystąpień without_ilość_wystąpień
+#1                                           OK                893                     893
+#2                   LOW COUNTS FOR BOTH GROUPS                720                       0
+#3                      LOW COUNT FOR ONE GROUP                532                       0
+#4             DATA FOR ONE GROUP NOT AVAILABLE               2134                       0
+#czyli wnioskujemy, że w naszej nowej DF znajdują się tylko te odczyty które zostaly znalezione w obu próbkach. 
+#inaczej, nasz tok rozumowania powinien raczej wyglądać tak: 
+    #użyliśmy zbioru danych z obecnymi tylko tymi odczytami których funkcje są opisane
+    #Ilość tych odczytów pokrywa się z ilością tych z drugiego zbioru 
+    #wniosek: Te transkrypty, które są opisane występują w obu próbkach jednocześnie. To znaczy,transkrypty występujące tylko u jednej formy mają nieznane funkcje! BINGO#############################BINGO#########################################
+
+
+
+#co znaczy cohen?'
+
+#między grupami brak zmienności w p.value i cohen. 
+#Co ciekawe, w odfiltrowanej bazie widać tendencje pojawiania się większej mediany liczby odczytów zarówno w PCF i BSF. Ale jest to wytłumaczalne tym, że prawdopodobnie do statystyk niefiltrowanych były też brane braki odczytów, które nie występowały w jednej z grup
+#Mediany i średnie długości między danymi są bardzo zbliżone
+#różnice długości, fold change, padj są na podobnym poziomie.
+#możemy wnioskować, że te odfiltrowane dane dobrze reprezentują szerszy zbiór danych pod kątem naszych oczekiwań i śmiało możemy go rozpatrywać pod katem dalszych analiz. Jest nawet lepszy o zbioru macierzystego(większego), bo jest mniejszy, angażuje mniej zasobów obliczeniowych oraz nie wprowadza szumu w postaci nieznalezionych transkryptów u jednej z dwóch form
+```
+
+
+```{r}
+#Robimy vulcano plot na bazie calculated_polya_stats_without_is_na#################################
+#Fold change - parametr opisujący zmianę w ekspresji - jest znormalizowany do głębokości sekwencjonowania (przeskalowany) jeden z podstawowych parametrów
+vulcano_date_calculated_without <- calculated_polya_stats
+vulcano_date_calculated_without <- vulcano_date_calculated_without %>% 
+  dplyr::mutate(fold_change_log2 = log2(fold_change), 
+                p.value_negative_log10 = -log10(p.value))
+
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without, aes(x = fold_change_log2, y = p.value_negative_log10)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "red")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")
+  geom_hline(yintercept = -log10(0.05), col= "red")
+vulcano
+
+#teraz troche pobawimy się danymi, tak by uwidocznić najbardziej skrajne transkrypty -> na nich nam najbardziej zależy
+vulcano_date_calculated_without$diffexpressed <- "NO"
+vulcano_date_calculated_without$diffexpressed[vulcano_date_calculated_without$fold_change_log2 > 0.6 & vulcano_date_calculated_without$p.value < 0.05] <- "UP" #przypisanie łatki UP dla tych transkryptów których p.value wynosi mniej niż 0.05 oraz różnica w ekspresji jest mniejsza niż 0.6
+
+vulcano_date_calculated_without$diffexpressed[vulcano_date_calculated_without$fold_change_log2 < -0.6 & vulcano_date_calculated_without$p.value < 0.05] <- "DOWN"  #przypisanie łatki DOWN dla tych transkryptów których p.value wynosi mniej niż 0.05 oraz różnica w ekspresji jest większa niż 0.6.
+
+
+
+#########
+
+
+#zróbmy teraz wykresik zbowu ale pokolorujmy według danych z kolumny która wyżej stworzyliśmy diffexpressed
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without, aes(x = fold_change_log2, y = p.value_negative_log10, col=diffexpressed)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "deeppink4")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")+
+  geom_hline(yintercept=-log10(0.05), col="darkred")
+vulcano
+
+#tworzymy też kolumnę dla tych danych najbardziej ubocznych, żebyśmy mogli podać ich nazwy
+vulcano_date_calculated_without$delabel <- NA
+vulcano_date_calculated_without$delabel[vulcano_date_calculated_without$diffexpressed != "NO"] <- vulcano_date_calculated_without$transcript[vulcano_date_calculated_without$diffexpressed !="NO"]
+
+
+
+
+
+#doskonalimy dalej nasz wykres ubogacając go o nową tabelę
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without, aes(x = fold_change_log2, y = p.value_negative_log10, col=diffexpressed, label = delabel)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "deeppink4")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")+
+  geom_hline(yintercept=-log10(0.05), col="darkred")+
+  geom_text()
+vulcano
+
+#oczywiście jest to bardzo nieczytelne ale za to ciekawe ćwiczenie
+
+
+```
+
+
+```{r}
+#Robimy vulcano plot na bazie calculated_polya_stats#################################
+#Fold change - parametr opisujący zmianę w ekspresji - jest znormalizowany do głębokości sekwencjonowania (przeskalowany) jeden z podstawowych parametrów
+vulcano_date_calculated_without_second <- calculated_polya_stats
+vulcano_date_calculated_without_second <- vulcano_date_calculated_without_second %>% 
+  dplyr::mutate(fold_change_log2 = log2(fold_change), 
+                p.value_negative_log10 = -log10(p.value))
+
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without_second, aes(x = fold_change_log2, y = p.value_negative_log10)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "red")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")
+  geom_hline(yintercept = -log10(0.05), col= "red")
+vulcano
+
+#teraz troche pobawimy się danymi, tak by uwidocznić najbardziej skrajne transkrypty -> na nich nam najbardziej zależy
+vulcano_date_calculated_without_second$diffexpressed <- "NO"
+vulcano_date_calculated_without_second$diffexpressed[vulcano_date_calculated_without_second$fold_change_log2 > 0.6 & vulcano_date_calculated_without_second$p.value < 0.05] <- "UP" #przypisanie łatki UP dla tych transkryptów których p.value wynosi mniej niż 0.05 oraz różnica w ekspresji jest mniejsza niż 0.6
+
+vulcano_date_calculated_without_second$diffexpressed[vulcano_date_calculated_without_second$fold_change_log2 < -0.6 & vulcano_date_calculated_without_second$p.value < 0.05] <- "DOWN"  #przypisanie łatki DOWN dla tych transkryptów których p.value wynosi mniej niż 0.05 oraz różnica w ekspresji jest większa niż 0.6.
+
+
+
+#########
+
+
+#zróbmy teraz wykresik zbowu ale pokolorujmy według danych z kolumny która wyżej stworzyliśmy diffexpressed
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without_second, aes(x = fold_change_log2, y = p.value_negative_log10, col=diffexpressed)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "deeppink4")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")+
+  geom_hline(yintercept=-log10(0.05), col="darkred")
+vulcano
+
+#tworzymy też kolumnę dla tych danych najbardziej ubocznych, żebyśmy mogli podać ich nazwy
+vulcano_date_calculated_without_second$delabel <- NA
+vulcano_date_calculated_without_second$delabel[vulcano_date_calculated_without_second$diffexpressed != "NO"] <- vulcano_date_calculated_without_second$transcript[vulcano_date_calculated_without_second$diffexpressed !="NO"]
+
+
+
+
+
+#doskonalimy dalej nasz wykres ubogacając go o nową tabelę
+vulcano <- ggplot2::ggplot(data = vulcano_date_calculated_without_second, aes(x = fold_change_log2, y = p.value_negative_log10, col=diffexpressed, label = delabel)) +
+  geom_point()+
+  theme_minimal() + 
+  geom_vline(xintercept = c(-0.6, 0.6), col = "deeppink4")+ #jaka jest funkcja tej lini? co chciał przekazać autor
+  geom_vline(xintercept = 0, col="darkblue")+
+  geom_hline(yintercept=-log10(0.05), col="darkred")+
+  geom_text()
+vulcano
+
+#oczywiście jest to bardzo nieczytelne ale za to ciekawe ćwiczenie
+
+
+
+#wykresy wyglądają w zasadzie bardzo podobnie, co tylko potwierdza tezę o dobrym reprezentowaniu dużego zbioru danych przez ten mniejszy (odfiltrowany z NA)
+#wnioski płynące z obu z nich to:
+#kształt odbiega od klasycznego vulcanoplota z racji niewielkiej ilości odczytów wyskakujacych powyżej punktu odcięcia alpha=0.05
+#część, lecz znowu niewiele różni się od siebie będąc po dwoch stronach przekraczając 0.6 dla foldchange
+```
+
+
